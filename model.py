@@ -67,47 +67,45 @@ class GUN(nn.Module):
 
         # MLP
         mlp_list = []
+        current_size = (un_layer + 1) * emb_size
         for i in range(mlp_layer - 1):
-            if i == 0:
-                pre_size = (un_layer + 1) * emb_size
-            else:
-                pre_size = mlp_size
-            linear = torch.nn.Linear(pre_size, mlp_size, bias=True).to(device)
+            linear = torch.nn.Linear(current_size, mlp_size, bias=True).to(device)
             init_layer(linear, mlp_init)
             mlp_list.append(linear)
             if if_mlp_bn:
                 mlp_list.append(nn.BatchNorm1d(mlp_size, momentum=bn_mom).to(device))
             mlp_list.extend([self.mlp_act, nn.Dropout(p=drop_rate)])
-
-        if mlp_layer <= 1:
-            pre_size = (un_layer + 1) * emb_size
-        else:
-            pre_size = mlp_size
-
-        linear = torch.nn.Linear(pre_size, num_classes, bias=True).to(device)
+            current_size = mlp_size
+        # MLP output
+        linear = torch.nn.Linear(current_size, num_classes, bias=True).to(device)
         init_layer(linear, mlp_init)
         mlp_list.append(linear)
         self.mlp = torch.nn.Sequential(*mlp_list)
 
-    def forward(self, X):
+    def forward(self, X):  # x shape (batch, step+1, feats)
         batch = X.shape[0]
         input_dim = X.shape[1]
         X = self.bn(X.reshape([batch * input_dim, -1])).contiguous().view([batch, input_dim, -1])
         X = self.drop_out(X)
+
+        # (batch, step+1, feats) -> (batch, step+1, embed)
         if self.if_trans_share:
-            trans_x = self.trans_act(self.trans_lin(X))
+            trans_x = self.trans_lin(X)
         else:
             trans_list = []
             for i in range(input_dim):
-                trans_list.append(self.trans_act(self.trans_lin[i](X[:, i, :])))
-            trans_x = torch.cat(trans_list, dim=-1)
+                trans_list.append(self.trans_lin[i](X[:, i, :]))
+            trans_x = torch.stack(trans_list, dim=1)
+        # (batch, step+1, embed) -> (batch, (step+1) * embed)
         if self.if_trans_bn:
             if self.if_bn_share:
                 trans_x = self.trans_bn(trans_x.reshape([batch * input_dim, -1])).reshape([batch, -1])
             else:
                 trans_x = self.trans_bn(trans_x.reshape([batch, -1]))
 
-        trans_x = self.drop_out(trans_x)
-        # concat the entries' features and put them input mlp2
+        # 原代码中把trans的激活函数放在了bn的前面，但按照提出bn的论文，激活函数应该放在bn后
+        trans_x = self.drop_out(self.trans_act(trans_x))
+        # concat the entries' features and put them into mlp2
+        # (batch, (step+1) * embed) -> (batch, classes)
         pred_x = self.mlp(trans_x)
         return pred_x
