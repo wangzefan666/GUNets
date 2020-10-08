@@ -1,0 +1,10 @@
+data/flickr
+data/ppi-large
+data/reddit
+data/amazon
+data/yelp
+model_save/
+pre/
+out_res/
+/*.txt
+__pycache__/

@@ -3,153 +3,34 @@ import sys
 import json
 import time
 import uuid
-import random
-import argparse
-import unfolder as unfolder
-import torch
-import numpy as np
-import torch.nn as nn
 import pickle as pkl
-import torch.nn.functional as F
 from sklearn import metrics
+import unfolder
 from model import *
 from os import path
 from utils import load_big
-from ipdb import launch_ipdb_on_exception
+from args import get_args
+
 
 def set_seed(seed, cuda):
+    """
+    使实验结果可复现
+    """
     print('Set Seed: ', seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)  # 禁止hash随机化
     if cuda:
         torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True  # 是否返回确定的卷积算法
+        torch.backends.cudnn.benchmark = False  # 是否搜索最合适的卷积实现算法，实现网络的加速
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', type=str, default='ppi',
-                    help='Data set.')
-parser.add_argument('--warm_batch_size', type=int, default=256,
-                    help='Warm up batch size')
-parser.add_argument('--warm_batch_num', type=int, default=0,
-                    help='Warm up batch number')
-parser.add_argument('--batch_size', type=int, default=2048,
-                    help='Number of nodes in a batch.')
-parser.add_argument('--output_batch', type=int, default=1,
-                    help='Report result every how many batchs.')
-parser.add_argument('--train_seed', type=int, default=42, help='Training Random seed.')
-parser.add_argument('--pre_seed', type=int, default=10, help='Preprocessing Random seed.')
-parser.add_argument('--no_cuda', action='store_true', default=False,
-                    help='Disables CUDA training.')
-parser.add_argument('--n_jobs', type=int, default=46,
-                    help='Max multiprocessing number.')
-parser.add_argument('--lr', type=float, default=1e-3,
-                    help='Initial learning rate.')
-parser.add_argument('--weight_decay', type=float, default=1e-5,
-                    help='Weight decay (L2 loss on parameters).')
-parser.add_argument('--if_output', action='store_true', default=False,
-                    help='Whether output the accuracys')
-parser.add_argument('--patience', type=int, default=60,
-                    help='Number of max patience count.')
-parser.add_argument('--name', type=str, default='warm_tr',
-                    help='Data set.')
-parser.add_argument('--recompute', action='store_true', default=False,
-                    help='Whether recompute the feature of nodes.')
+def main():
+    args = get_args()
+    root_path = os.getcwd() + '/'
 
-# Unfolding
-parser.add_argument('--samp_pare_num', type=int, default=10,
-                    help='Number of sampling parents.')
-parser.add_argument('--samp_times', type=int, default=1,
-                    help='Total sampling number.')
-parser.add_argument('--samp_num', type=int, default=300,
-                    help='The number of nodes in an sampling filter.')
-parser.add_argument('--un_layer', type=int, default=2,
-                    help='number of unfolding layers.')
-parser.add_argument('--max_degree', type=int, default=50,
-                    help='Max multiprocessing number.')
-parser.add_argument('--max_samp_nei', type=int, default=256,
-                    help='Max sampling neighbor number.')
-parser.add_argument('--if_sampling', action='store_true', default=False,
-                    help='Whether use Sampling.')
-parser.add_argument('--if_normalized', action='store_true', default=False,
-                    help='Whether use raw normalization.')
-parser.add_argument('--degree_normalized', action='store_true', default=False,
-                    help='Whether use degree normalization.')
-parser.add_argument('--if_sort', action='store_true', default=False,
-                    help='Whether sorted the neighbors by its degree.')
-parser.add_argument('--if_self_loop', action='store_true', default=False,
-                    help='Whether use self loop.')
-parser.add_argument('--weight', type=str, default='rw',
-                    choices=['same', 'rw'],
-                    help='Node aggregation Function.')
-
-
-# Model
-parser.add_argument('--emb_size', type=int, default=256,
-                    help='Size of embedding layer.')
-parser.add_argument('--if_mlp_trans', action='store_true', default=False,
-                    help='Whether using MLP trans layer')
-parser.add_argument('--if_trans_bn', action='store_true', default=False,
-                    help='Whether using bn after the trans')
-parser.add_argument('--if_mlp_bn', action='store_true', default=False,
-                    help='Whether using bn after the trans')
-parser.add_argument('--if_trans_share', action='store_true', default=False,
-                    help='Whether using the same trans_layer for each step.')
-parser.add_argument('--if_bn_share', action='store_true', default=False,
-                    help='Whether using the same bn layer.')
-parser.add_argument('--trans_act', type=str, default='leaky',
-                    choices=['relu', 'leaky', 'sigmoid', 'none', 'tanh'],
-                    help='Trans Layer Aggregation Method.')
-parser.add_argument('--mlp_act', type=str, default='leaky',
-                    choices=['relu', 'leaky', 'sigmoid', 'none', 'tanh'],
-                    help='MLP Layer Aggregation Method.')
-parser.add_argument('--trans_init', type=str, default='xavier',
-                    choices=['none', 'xavier', 'kaiming'],
-                    help='Trans Layer Aggregation Method.')
-parser.add_argument('--mlp_init', type=str, default='xavier',
-                    choices=['none', 'xavier', 'kaiming'],
-                    help='Trans Layer Aggregation Method.')
-parser.add_argument('--mlp_size', type=int, default=256,
-                    help='Size of mlp layer.')
-parser.add_argument('--mlp_layer', type=int, default=2,
-                    help='Number of mlp layer.')
-parser.add_argument('--if_bias', action='store_true', default=False,
-                    help='Whether use bias in trans and map.')
-parser.add_argument('--drop_rate', type=float, default=0.2,
-                    help='Drop Rate.')
-parser.add_argument('--bn_mom', type=float, default=0.1,
-                    help='Batch normalization momentum.')
-parser.add_argument('--run_times', type=int, default=3,
-                    help='Size of running times.')
-parser.add_argument('--pre_load', type=str, default='',
-                    help='Preloading File')
-parser.add_argument('--if_separa', action='store_true', default=False,
-                    help='Whether use separate trans lin.')
-
-
-args, _ = parser.parse_known_args()
-args.cuda = not args.no_cuda and torch.cuda.is_available()
-args.device = torch.device("cuda:0" if args.cuda else "cpu")
-if args.run_times > 1:
-    args.if_multi = True
-else:
-    args.if_multi = False
-if args.samp_times >1:
-    args.if_sampling=True
-
-if args.dataset in ['ppi', 'yelp', 'amazon']:
-    args.if_multi_label = True
-else:
-    args.if_multi_label = False
-if args.if_output:
-    print('\n'.join([(str(_) + ':' + str(vars(args)[_])) for _ in vars(args).keys()]))
-
-root_path = os.getcwd() + '/'
-
-with launch_ipdb_on_exception():
     # Load Data
     t0 = time.time()
     adj, features, labels, tr_idx, va_idx, ts_idx = load_big(prefix=args.dataset)
@@ -158,25 +39,27 @@ with launch_ipdb_on_exception():
     if args.if_multi_label:
         num_classes = labels.shape[1]
     else:
-        if labels.shape[1]>1:
+        if labels.shape[1] > 1:
             labels = labels.argmax(1)
         num_classes = int(np.max(labels)) + 1
 
-    unfolder.init(adj, features, set(tr_idx), args.samp_pare_num, args.samp_num, args.samp_times, args.un_layer, max_degree=args.max_degree,
-                  max_samp_nei=args.max_samp_nei, if_normalized=args.if_normalized, degree_normalized=args.degree_normalized,
+    unfolder.init(adj, features, set(tr_idx), args.samp_pare_num, args.samp_num, args.samp_times, args.un_layer,
+                  max_degree=args.max_degree,
+                  max_samp_nei=args.max_samp_nei, if_normalized=args.if_normalized,
+                  degree_normalized=args.degree_normalized,
                   if_self_loop=args.if_self_loop, if_bagging=args.if_sampling, if_sort=args.if_sort,
                   weight=args.weight, n_jobs=args.n_jobs, seed=args.pre_seed)
 
     appendix = ''
     if args.if_normalized:
-        appendix+='-norm'
+        appendix += '-norm'
     if args.degree_normalized:
-        appendix+='-degnorm'
+        appendix += '-degnorm'
     if args.if_self_loop:
-        appendix+='-self'
+        appendix += '-self'
     if args.if_sort:
         appendix += '-sort'
-    appendix+='-degree'+str(args.max_degree)
+    appendix += '-degree' + str(args.max_degree)
     appendix += '-tr'
     pre_path = root_path + 'pre/'
     if not os.path.exists(pre_path):
@@ -184,15 +67,15 @@ with launch_ipdb_on_exception():
     if args.if_sampling:
         emb_save_file = 'pre/{}-la{}-st{}-sp{}-sn{}-seed{}.pkl'.format(
             args.dataset, args.un_layer, args.samp_times, args.samp_pare_num, args.samp_num,
-            args.pre_seed,appendix)
+            args.pre_seed, appendix)
     else:
         emb_save_file = 'pre/{}-naive-la{}-weight{}{}.pkl'.format(args.dataset, args.un_layer, args.weight, appendix)
 
-    print('-'*60)
+    print('-' * 60)
 
-    if len(args.pre_load) >0:
+    if len(args.pre_load) > 0:
         emb_save_file = args.pre_load
-    print('EMB File Name:%s' %emb_save_file)
+    print('EMB File Name:%s' % emb_save_file)
     if path.exists(emb_save_file) and not args.recompute:
         print('Load Previous Node Features')
         with open(emb_save_file, 'rb') as f:
@@ -207,7 +90,7 @@ with launch_ipdb_on_exception():
         va_embs = unfolder.get_batch_emb(va_idx)
         ts_embs = unfolder.get_batch_emb(ts_idx)
         t1 = time.time()
-        pre_cost = t1-t0
+        pre_cost = t1 - t0
         d = dict()
         d['tr'] = tr_embs
         d['va'] = va_embs
@@ -236,7 +119,6 @@ with launch_ipdb_on_exception():
     else:
         loss_func = nn.CrossEntropyLoss().to(args.device)
 
-
     def evaluate(net, X, Y, batch_size):
         with torch.no_grad():
             out_list = []
@@ -249,11 +131,10 @@ with launch_ipdb_on_exception():
         score = score_func(out, Y)
         return loss, score
 
-
     def score_func(out, Y):
         y_true = Y.data.cpu().numpy()
         if args.if_multi_label:
-            y_pred = F.sigmoid(out).data.cpu().numpy()
+            y_pred = torch.sigmoid(out).data.cpu().numpy()
             y_pred[y_pred > 0.5] = 1
             y_pred[y_pred <= 0.5] = 0
             y_pred = y_pred.astype(np.int)
@@ -270,13 +151,12 @@ with launch_ipdb_on_exception():
     time_plot_main_list = []
     for run_count in range(args.run_times):
         t0 = time.time()
-        set_seed(args.train_seed+run_count, args.cuda)
-        gun = GUN(
-            num_feature, num_classes, emb_size=args.emb_size, un_layer=args.un_layer, if_mlp_trans=args.if_mlp_trans,
-            if_trans_bn=args.if_trans_bn, if_mlp_bn=args.if_mlp_bn, if_trans_share=args.if_trans_share,
-            if_bn_share=args.if_bn_share, if_trans_bias=args.if_bias, if_separa=args.if_separa, trans_act=args.trans_act,
-            mlp_act=args.mlp_act, mlp_size=args.mlp_size, mlp_layer=args.mlp_layer, trans_init=args.trans_init,
-            mlp_init=args.mlp_init, bn_mom=args.bn_mom, drop_rate=args.drop_rate, device=args.device)
+        set_seed(args.train_seed + run_count, args.cuda)
+        gun = GUN(num_feature, num_classes, emb_size=args.emb_size, un_layer=args.un_layer,
+                  if_trans_bn=args.if_trans_bn, trans_act=args.trans_act, if_trans_share=args.if_trans_share,
+                  if_bn_share=args.if_bn_share, if_trans_bias=args.if_bias, trans_init=args.trans_init,
+                  mlp_act=args.mlp_act, mlp_size=args.mlp_size, mlp_layer=args.mlp_layer, if_mlp_bn=args.if_mlp_bn,
+                  mlp_init=args.mlp_init, bn_mom=args.bn_mom, drop_rate=args.drop_rate, device=args.device)
 
         optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, gun.parameters()), lr=args.lr, weight_decay=args.weight_decay)
@@ -296,7 +176,7 @@ with launch_ipdb_on_exception():
         batch = 0
         time_list = []
         time_plot_list = []
-        early_stop_flag=False
+        early_stop_flag = False
         train_time = 0
         pure_train_time = 0
         his_file = ''
@@ -312,12 +192,12 @@ with launch_ipdb_on_exception():
                 t_train_begin = time.time()
                 if batch == args.warm_batch_num:
                     batch_size = args.batch_size
-                    print('*'*25, 'Updating BatchSize to %d' %(batch_size), '*'*25)
+                    print('*' * 25, 'Updating BatchSize to %d' % (batch_size), '*' * 25)
                     batch += 1
                     break
-                batch+=1
-                end_ind = min(ind+args.batch_size, len(tr_idx))
-                if end_ind-ind == 0:
+                batch += 1
+                end_ind = min(ind + args.batch_size, len(tr_idx))
+                if end_ind - ind == 0:
                     continue
                 batch_nodes = list(range(ind, end_ind))
                 gun.train()
@@ -354,25 +234,26 @@ with launch_ipdb_on_exception():
                             early_stop_flag = True
                             break
                     t_val_end = time.time()
-                    epoch_val_cost.append(t_val_end-t_val_begin)
+                    epoch_val_cost.append(t_val_end - t_val_begin)
                     if args.if_output:
                         print('Epo%d-%d(%d/%d) loss:%.4f|Tr:%.4f|Va:%.4f|BestVa:%.4f Ts:%.4f|Train time:%.2f' % (
                             epoch + 1, batch + 1, patience_count, args.patience, loss.data, tr_acc, va_acc,
                             va_acc_max, ts_acc, train_time))
             t_epoch_end = time.time()
             time_list.append([
-                t_epoch_end-t_epoch_begin,
+                t_epoch_end - t_epoch_begin,
                 np.sum(epoch_train_cost),
                 np.sum(epoch_val_cost)
             ])
             if args.if_output:
-                print('-'*5,'Train %d epoch in %.2f[%.2f](%.2f) second' %(epoch, time.time() - t0, train_time, time_list[-1][0]), '-'*5)
+                print('-' * 5, 'Train %d epoch in %.2f[%.2f](%.2f) second' % (
+                    epoch, time.time() - t0, train_time, time_list[-1][0]), '-' * 5)
         time_array = np.array(time_list)
         t1 = time.time()
         gun.load_state_dict(torch.load(save_file))
         gun.eval()
         ts_acc = evaluate(gun, X_ts, Y_ts, 2 * args.batch_size)[1]
-        running_cost = t1-t0
+        running_cost = t1 - t0
         result = [
             batch,
             ts_acc,
@@ -382,12 +263,12 @@ with launch_ipdb_on_exception():
             np.mean(time_array[:, 2]),  # Per epoch val time
             train_time
         ]
-        with open('./' + args.dataset+'_' + args.name+ '_time.txt', 'w') as f:
+        with open('./' + args.dataset + '_' + args.name + '_time.txt', 'w') as f:
             f.write('epoch, time_train, va_acc\n')
             for _ in time_plot_list:
                 f.write('%d,%.4f,%.4f\n' % (_[0], _[1], _[2]))
-        print('#'*30,'Running Time %d'%(run_count), '#'*30)
-        print('Final Batch:%d, TS_score:%.4f, PreCompute time:%.2f, Running time:%.2f, Training time:%.2f'%(
+        print('#' * 30, 'Running Time %d' % (run_count), '#' * 30)
+        print('Final Batch:%d, TS_score:%.4f, PreCompute time:%.2f, Running time:%.2f, Training time:%.2f' % (
             result[0], result[1], pre_cost, result[2], result[6]))
         result_list.append(result)
         time_plot_main_list.append(time_plot_list)
@@ -396,23 +277,27 @@ with launch_ipdb_on_exception():
         result_array = np.array(result_list)
         args.mean_ts_acc = np.mean(result_array[:, 1])
         args.std_ts_acc = np.std(result_array[:, 1])
-        print('*'*60)
-        print('Mean TS_score:%.4f'%(args.mean_ts_acc))
-        print('STD TS_score:%.4f'%(args.std_ts_acc))
+        print('*' * 60)
+        print('Mean TS_score:%.4f' % args.mean_ts_acc)
+        print('STD TS_score:%.4f' % args.std_ts_acc)
         args.pre_computing_cost = pre_cost
-        args.running_cost = np.mean(result_array[:,2])
-        args.total_time_cost = args.pre_computing_cost+args.running_cost
-        args.epoch_run_cost = np.mean(result_array[:,3])
-        args.epoch_train_cost = np.mean(result_array[:,4])
-        args.epoch_val_cost = np.mean(result_array[:,5])
+        args.running_cost = np.mean(result_array[:, 2])
+        args.total_time_cost = args.pre_computing_cost + args.running_cost
+        args.epoch_run_cost = np.mean(result_array[:, 3])
+        args.epoch_train_cost = np.mean(result_array[:, 4])
+        args.epoch_val_cost = np.mean(result_array[:, 5])
         device_bak = args.device
         args.device = args.device.type
         args.result_list = result_list
-        args.final_batch = np.mean(result_array[:,0])
+        args.final_batch = np.mean(result_array[:, 0])
         args.cmd = ' '.join(['python'] + sys.argv)
         args.time_list = time_plot_main_list
-        out_file = out_path + args.name +args.dataset + "-%.4f-%d-"%(args.mean_ts_acc, args.run_times) + uuid_code
-        if run_count == args.run_times -1 :
+        out_file = out_path + args.name + args.dataset + "-%.4f-%d-" % (args.mean_ts_acc, args.run_times) + uuid_code
+        if run_count == args.run_times - 1:
             with open(out_file, "w") as f:
                 json.dump(vars(args), f)
         args.device = device_bak
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -126,12 +126,12 @@ def load_data(dataset, semi=False, modified=False):
     return adj, features, labels, tr_idx, va_idx, ts_idx
 
 
-def load_big(path='../data/', prefix='ppi'):
-    adj_full = sp.load_npz(path + './{}/adj_full.npz'.format(prefix)).astype(np.bool)
-    adj_train = sp.load_npz(path + './{}/adj_train.npz'.format(prefix)).astype(np.bool)
-    role = json.load(open(path + './{}/role.json'.format(prefix)))
-    feats = np.load(path + './{}/feats.npy'.format(prefix))
-    class_map = json.load(open(path + './{}/class_map.json'.format(prefix)))
+def load_big(path='./data/', prefix='ppi'):
+    adj_full = sp.load_npz(path + '{}/adj_full.npz'.format(prefix)).astype(np.bool)
+    adj_train = sp.load_npz(path + '{}/adj_train.npz'.format(prefix)).astype(np.bool)
+    role = json.load(open(path + '{}/role.json'.format(prefix)))
+    feats = np.load(path + '{}/feats.npy'.format(prefix))
+    class_map = json.load(open(path + '{}/class_map.json'.format(prefix)))
     if isinstance(class_map['0'], int):
         labels = np.zeros((feats.shape[0], 1))
     else:
